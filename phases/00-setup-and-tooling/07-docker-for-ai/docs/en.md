@@ -216,7 +216,7 @@ docker build -t ai-dev -f phases/00-setup-and-tooling/07-docker-for-ai/code/Dock
 
 This takes a while the first time (downloading CUDA base image + PyTorch). Subsequent builds use cached layers.
 
-**macOS / Apple Silicon (M1/M2/M3/M4):** The `--platform=linux/amd64` on the `FROM` line is what makes this build succeed on a Mac. The CUDA base image also ships an arm64 variant and Docker Desktop picks it automatically on Apple Silicon, but PyTorch publishes its `cu124` wheels for x86_64 only, so the `pip install torch==2.6.0+cu124` layer fails with `No matching distribution found for torch==2.6.0+cu124`. Pinning the platform pulls the x86_64 image and runs it under emulation: the build is slower and the container has no GPU (there is no CUDA on a Mac either way). Drop `--gpus all` from the `docker run` commands below on a Mac. For GPU work on Apple Silicon, run the lessons natively with the MPS build from Lesson 01 and keep this image for x86_64 Linux hosts with an NVIDIA GPU.
+**macOS / Apple Silicon (M1/M2/M3/M4):** The `--platform=linux/amd64` on the `FROM` line is what makes this build succeed on a Mac. The CUDA base image also ships an arm64 variant and Docker Desktop picks it automatically on Apple Silicon, but PyTorch publishes its `cu124` wheels for x86_64 only, so the `pip install torch==2.6.0+cu124` layer fails with `No matching distribution found for torch==2.6.0+cu124`. Pinning the platform pulls the x86_64 image and runs it under emulation: the build is slower and the container has no GPU (there is no CUDA on a Mac either way). Drop `--gpus all` from the `docker run` commands below on a Mac; the Compose stack in Step 6 needs no change, because its GPU reservation is a separate overlay. For GPU work on Apple Silicon, run the lessons natively with the MPS build from Lesson 01 and keep this image for x86_64 Linux hosts with an NVIDIA GPU.
 
 Run it:
 
@@ -274,13 +274,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     volumes:
       - ../../../:/workspace
       - ~/models:/models
@@ -303,22 +296,55 @@ volumes:
   qdrant_data:
 ```
 
-Start everything:
+The base file reserves no GPU, so it starts on any host:
 
 ```bash
 cd phases/00-setup-and-tooling/07-docker-for-ai/code
 docker compose up -d
 ```
 
+On an x86_64 Linux host with the NVIDIA Container Toolkit, layer on
+`code/docker-compose.gpu.yml` to give `ai-dev` the GPU:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+```yaml
+services:
+  ai-dev:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+The reservation lives in an overlay instead of the base file because Compose
+merges overlay sequences by appending. An overlay can add a `devices` entry,
+but none can remove one. A base file that hardcodes `driver: nvidia` therefore
+refuses to start on macOS, or on any Linux host without an NVIDIA GPU, and no
+`docker-compose.override.yml` can rescue it:
+
+```console
+Error response from daemon: could not select device driver "nvidia" with capabilities: [[gpu]]
+```
+
 Now your AI dev container can reach the vector database at `http://qdrant:6333` by service name. Docker Compose creates a shared network automatically.
 
 Test the connection from inside the AI container:
 
-```python
-from qdrant_client import QdrantClient
+```bash
+docker compose exec ai-dev python -c "import json, urllib.request; print(json.load(urllib.request.urlopen('http://qdrant:6333/collections')))"
+```
 
-client = QdrantClient(host="qdrant", port=6333)
-print(client.get_collections())
+Qdrant exposes a plain HTTP API, so stdlib `urllib` is enough to prove the two
+services share a network. Expect a response like this (the `time` value varies):
+
+```console
+{'result': {'collections': []}, 'status': 'ok', 'time': 1.525e-05}
 ```
 
 Stop everything:

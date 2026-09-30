@@ -1,0 +1,14 @@
+# Overlay that reserves an NVIDIA GPU for the ai-dev service.
+# Use it only on an x86_64 Linux host with the NVIDIA Container Toolkit:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Compose merges overlay sequences by appending, so this file can add the
+# reservation but no overlay can remove it. That is why the base file has none.
+services:
+  ai-dev:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
